@@ -326,8 +326,6 @@ if RbConfig::MAKEFILE_CONFIG['CC'] =~ /gcc/
   $CFLAGS << " -Wall -Wcast-qual -Wwrite-strings -Wconversion -Wmissing-noreturn -Winline"
 end
 
-case
-when arg_config('--use-system-libraries', !!ENV['NOKOGIRI_USE_SYSTEM_LIBRARIES'])
   message! "Building nokogiri using system libraries.\n"
 
   dir_config('zlib')
@@ -335,9 +333,14 @@ when arg_config('--use-system-libraries', !!ENV['NOKOGIRI_USE_SYSTEM_LIBRARIES']
   # Using system libraries means we rely on the system libxml2 with
   # regard to the iconv support.
 
-  dir_config('xml2').any?  or pkg_config('libxml-2.0')
-  dir_config('xslt').any?  or pkg_config('libxslt')
-  dir_config('exslt').any? or pkg_config('libexslt')
+  #dir_config('xml2').any?  or pkg_config('libxml-2.0')
+  #dir_config('xslt').any?  or pkg_config('libxslt')
+  #dir_config('exslt').any? or pkg_config('libexslt')
+
+static_p = false
+pkg_config('libxml-2.0')
+pkg_config('libxslt')
+pkg_config('libexslt')
 
   try_cpp(<<-SRC) or abort "libxml2 version 2.6.21 or later is required!"
 #include <libxml/xmlversion.h>
@@ -354,152 +357,6 @@ when arg_config('--use-system-libraries', !!ENV['NOKOGIRI_USE_SYSTEM_LIBRARIES']
 #error libxml2 is too new
 #endif
   SRC
-else
-  message! "Building nokogiri using packaged libraries.\n"
-
-  require 'mini_portile'
-  monkey_patch_mini_portile
-  require 'yaml'
-
-  static_p = enable_config('static', true) or
-    message! "Static linking is disabled.\n"
-
-  dir_config('zlib')
-
-  dependencies = YAML.load_file(File.join(ROOT, "dependencies.yml"))
-
-  cross_build_p = enable_config("cross-build")
-  if cross_build_p || windows_p
-    zlib_recipe = process_recipe("zlib", dependencies["zlib"], static_p, cross_build_p) do |recipe|
-      recipe.files = ["http://zlib.net/#{recipe.name}-#{recipe.version}.tar.gz"]
-      class << recipe
-        attr_accessor :cross_build_p
-
-        def configure
-          Dir.chdir work_path do
-            mk = File.read 'win32/Makefile.gcc'
-            File.open 'win32/Makefile.gcc', 'wb' do |f|
-              f.puts "BINARY_PATH = #{path}/bin"
-              f.puts "LIBRARY_PATH = #{path}/lib"
-              f.puts "INCLUDE_PATH = #{path}/include"
-              mk.sub!(/^PREFIX\s*=\s*$/, "PREFIX = #{host}-") if cross_build_p
-              f.puts mk
-            end
-          end
-        end
-
-        def configured?
-          Dir.chdir work_path do
-            !! (File.read('win32/Makefile.gcc') =~ /^BINARY_PATH/)
-          end
-        end
-
-        def compile
-          execute "compile", "make -f win32/Makefile.gcc"
-        end
-
-        def install
-          execute "install", "make -f win32/Makefile.gcc install"
-        end
-      end
-      recipe.cross_build_p = cross_build_p
-    end
-
-    libiconv_recipe = process_recipe("libiconv", dependencies["libiconv"], static_p, cross_build_p) do |recipe|
-      recipe.files = ["http://ftp.gnu.org/pub/gnu/libiconv/#{recipe.name}-#{recipe.version}.tar.gz"]
-      recipe.configure_options += [
-        "CPPFLAGS='-Wall'",
-        "CFLAGS='-O2 -g'",
-        "CXXFLAGS='-O2 -g'",
-        "LDFLAGS="
-      ]
-    end
-  end
-
-  libxml2_recipe = process_recipe("libxml2", dependencies["libxml2"], static_p, cross_build_p) do |recipe|
-    recipe.files = ["ftp://ftp.xmlsoft.org/libxml2/#{recipe.name}-#{recipe.version}.tar.gz"]
-    recipe.configure_options += [
-      "--without-python",
-      "--without-readline",
-      "--with-iconv=#{libiconv_recipe ? libiconv_recipe.path : iconv_prefix}",
-      "--with-c14n",
-      "--with-debug",
-      "--with-threads"
-    ]
-  end
-
-  libxslt_recipe = process_recipe("libxslt", dependencies["libxslt"], static_p, cross_build_p) do |recipe|
-    recipe.files = ["ftp://ftp.xmlsoft.org/libxml2/#{recipe.name}-#{recipe.version}.tar.gz"]
-    recipe.configure_options += [
-      "--without-python",
-      "--without-crypto",
-      "--with-debug",
-      "--with-libxml-prefix=#{libxml2_recipe.path}"
-    ]
-  end
-
-  $CFLAGS << ' ' << '-DNOKOGIRI_USE_PACKAGED_LIBRARIES'
-  $LIBPATH = ["#{zlib_recipe.path}/lib"] | $LIBPATH if zlib_recipe
-  $LIBPATH = ["#{libiconv_recipe.path}/lib"] | $LIBPATH if libiconv_recipe
-
-  have_lzma = preserving_globals {
-    have_library('lzma')
-  }
-
-  $libs = $libs.shellsplit.tap { |libs|
-    [libxml2_recipe, libxslt_recipe].each { |recipe|
-      libname = recipe.name[/\Alib(.+)\z/, 1]
-      File.join(recipe.path, "bin", "#{libname}-config").tap { |config|
-        # call config scripts explicit with 'sh' for compat with Windows
-        $CPPFLAGS = `sh #{config} --cflags`.strip << ' ' << $CPPFLAGS
-        `sh #{config} --libs`.strip.shellsplit.each { |arg|
-          case arg
-          when /\A-L(.+)\z/
-            # Prioritize ports' directories
-            if $1.start_with?(ROOT + '/')
-              $LIBPATH = [$1] | $LIBPATH
-            else
-              $LIBPATH = $LIBPATH | [$1]
-            end
-          when /\A-l./
-            libs.unshift(arg)
-          else
-            $LDFLAGS << ' ' << arg.shellescape
-          end
-        }
-      }
-
-      $CPPFLAGS << ' ' << "-DNOKOGIRI_#{recipe.name.upcase}_PATH=\"#{recipe.path}\"".shellescape
-
-      case libname
-      when 'xml2'
-        # xslt-config --libs or pkg-config libxslt --libs does not include
-        # -llzma, so we need to add it manually when linking statically.
-        if static_p && have_lzma
-          # Add it at the end; GH #988
-          libs << '-llzma'
-        end
-      when 'xslt'
-        # xslt-config does not have a flag to emit options including
-        # -lexslt, so add it manually.
-        libs.unshift('-lexslt')
-      end
-    }
-  }.shelljoin
-
-  if static_p
-    $libs = $libs.shellsplit.map { |arg|
-      case arg
-      when '-lxml2'
-        File.join(libxml2_recipe.path, 'lib', lib_a(arg))
-      when '-lxslt', '-lexslt'
-        File.join(libxslt_recipe.path, 'lib', lib_a(arg))
-      else
-        arg
-      end
-    }.shelljoin
-  end
-end
 
 {
   "xml2"  => ['xmlParseDoc',            'libxml/parser.h'],

@@ -167,7 +167,7 @@ module Nokogiri
       def test_html_fragment_with_input_and_intermediate_whitespace
         doc = "<label>Label</label><input type=\"text\"> <span>span</span>"
         fragment = Nokogiri::HTML::Document.new.fragment(doc)
-        assert_equal "<label>Label</label><input type=\"text\"> <span>span</span>", fragment.to_s
+        assert_equal "<label>Label</label><input type=\"text\"><span>span</span>", fragment.to_s
       end
 
       def test_html_fragment_with_leading_text_and_newline
