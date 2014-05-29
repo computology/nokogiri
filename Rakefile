@@ -103,7 +103,7 @@ ENV['RUBY_CC_VERSION'] ||= CROSS_RUBIES.map(&:ver).uniq.join(":")
 
 require 'tasks/nokogiri.org'
 
-HOE = Hoe.spec 'packagecloud-nokogiri' do
+HOE = Hoe.spec 'nokogiri' do
   developer 'Aaron Patterson', 'aaronp@rubyforge.org'
   developer 'Mike Dalessio',   'mike.dalessio@gmail.com'
   developer 'Yoko Harada',     'yokolet@gmail.com'
